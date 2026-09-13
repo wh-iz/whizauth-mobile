@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "WhizAuth",
+    "slug": "whizauth-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#07090e"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#07090e"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+export const THEME = {
+  colors: {
+    bg: "#07090e",
+    bgCard: "#0d131f",
+    bgCardSubtle: "rgba(255, 255, 255, 0.03)",
+    border: "#1e293b",
+    borderFocus: "#a855f7",
+    primary: "#a855f7",
+    primaryGlow: "rgba(168, 85, 247, 0.3)",
+    secondary: "#06b6d4",
+    secondaryGlow: "rgba(6, 182, 212, 0.3)",
+    success: "#10b981",
+    successGlow: "rgba(16, 185, 129, 0.2)",
+    danger: "#ef4444",
+    dangerGlow: "rgba(239, 68, 68, 0.2)",
+    warning: "#f59e0b",
+    text: "#f8fafc",
+    textMuted: "#94a3b8",
+    textDim: "#64748b",
+  },
+  spacing: {
+    xs: 4,
+    sm: 8,
+    md: 12,
+    lg: 16,
+    xl: 24,
+    xxl: 32,
+  },
+  borderRadius: {
+    sm: 8,
+    md: 12,
+    lg: 16,
+    xl: 20,
+    full: 9999,
+  }
+};
