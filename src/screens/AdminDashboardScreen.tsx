@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   Alert,
   TouchableOpacity,
   TextInput,
+  ActivityIndicator,
+  Clipboard,
 } from "react-native";
 import { THEME } from "../styles/theme";
 import { Card } from "../components/Card";
@@ -22,33 +24,67 @@ import {
   unpauseKey,
   banKey,
   deleteKey,
+  extendKeyTime,
+  extendAllKeysByAppId,
   fetchActiveSessions,
   killSession,
 } from "../api/adminApi";
 import {
+  currentApiUrl,
+  setApiUrl,
+  DEFAULT_API_URL,
+} from "../api/client";
+import {
   Key,
   PlusCircle,
+  Clock,
+  Activity,
+  Settings as SettingsIcon,
   Copy,
   Trash2,
   Ban,
   Pause,
   Play,
   RotateCcw,
-  Activity,
-  Users,
   Search,
   Check,
+  RefreshCw,
+  Server,
+  LogOut,
+  Wifi,
 } from "lucide-react-native";
 
-export const AdminDashboardScreen: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"keys" | "create" | "sessions">("keys");
+interface AdminDashboardScreenProps {
+  onLogout?: () => void;
+}
+
+const PRODUCTS = [
+  { name: "whizARD AI", id: "whizard_ai", pattern: "WZRD-AI-****-****" },
+  { name: "whizARD AI+", id: "whizard_ai_plus", pattern: "WZRD-AI+-****-****" },
+  { name: "whizARD V1", id: "whizard_v1", pattern: "WZRD-V1-****-****" },
+  { name: "whizARD V2", id: "whizard_v2", pattern: "WZRD-V2-****-****" },
+  { name: "whizARD Toolbox", id: "whizard_toolbox", pattern: "WZRD-TBX-****-****" },
+  { name: "whizARD SWS", id: "whizard_sws", pattern: "WZRD-SWS-****-****" },
+  { name: "whizARD SWSBOT", id: "whizard_swsbot", pattern: "WZRD-SWB-****-****" },
+  { name: "Loot Goblin", id: "LG", pattern: "LG-****-****" },
+  { name: "Custom", id: "custom", pattern: "WZRD-APP-****-****" },
+];
+
+export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
+  onLogout,
+}) => {
+  const [activeTab, setActiveTab] = useState<
+    "keys" | "create" | "extend" | "sessions" | "settings"
+  >("keys");
+
+  // Keys state
   const [keys, setKeys] = useState<KeyItemData[]>([]);
-  const [sessions, setSessions] = useState<SessionItemData[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterAppId, setFilterAppId] = useState("");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Key creation state
+  // Generate Key state
   const [keyType, setKeyType] = useState<"APP" | "MODEL">("APP");
   const [appId, setAppId] = useState("whizard_ai");
   const [durationDays, setDurationDays] = useState("30");
@@ -56,15 +92,50 @@ export const AdminDashboardScreen: React.FC = () => {
   const [usedByNote, setUsedByNote] = useState("");
   const [createdKeyResult, setCreatedKeyResult] = useState<string | null>(null);
 
+  // Add Time state
+  const [extendScope, setExtendScope] = useState<"SINGLE" | "ALL_APP_KEYS">("SINGLE");
+  const [extendTarget, setExtendTarget] = useState("");
+  const [extendAmount, setExtendAmount] = useState("7");
+  const [extendUnit, setExtendUnit] = useState<"HOUR" | "DAY" | "WEEK" | "MONTH">("DAY");
+
+  // Sessions state
+  const [sessions, setSessions] = useState<SessionItemData[]>([]);
+  const [autoRefreshSessions, setAutoRefreshSessions] = useState(true);
+
+  // Server Settings state
+  const [apiUrlInput, setApiUrlInput] = useState(currentApiUrl);
+  const [pingStatus, setPingStatus] = useState<string | null>(null);
+  const [pingLoading, setPingLoading] = useState(false);
+
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     loadData();
-  }, [activeTab]);
+  }, [activeTab, filterAppId]);
+
+  useEffect(() => {
+    if (activeTab === "sessions" && autoRefreshSessions) {
+      timerRef.current = setInterval(() => {
+        fetchActiveSessions()
+          .then((res) => {
+            if (res.success && res.data) setSessions(res.data);
+          })
+          .catch(() => {});
+      }, 10000);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [activeTab, autoRefreshSessions]);
 
   const loadData = async () => {
     setLoading(true);
     try {
       if (activeTab === "keys") {
-        const resp = await fetchAllKeys(searchQuery || undefined);
+        const resp = await fetchAllKeys(
+          searchQuery.trim() || undefined,
+          filterAppId || undefined
+        );
         if (resp.success && resp.data) {
           setKeys(resp.data.appKeys || []);
         }
@@ -79,6 +150,17 @@ export const AdminDashboardScreen: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    Clipboard.setString(text);
+    setCopiedKey(label);
+    setTimeout(() => setCopiedKey(null), 2000);
+  };
+
+  const handleProductPreset = (prod: (typeof PRODUCTS)[0]) => {
+    setAppId(prod.id === "custom" ? "" : prod.id);
+    setKeyPattern(prod.pattern);
   };
 
   const handleCreateKey = async () => {
@@ -111,7 +193,53 @@ export const AdminDashboardScreen: React.FC = () => {
     }
   };
 
-  const handleAction = async (
+  const handleExtendTime = async () => {
+    const amount = parseInt(extendAmount, 10);
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert("Error", "Please enter a valid amount");
+      return;
+    }
+
+    if (extendScope === "SINGLE" && !extendTarget.trim()) {
+      Alert.alert("Error", "Please enter the target Key or ID");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      if (extendScope === "SINGLE") {
+        const resp = await extendKeyTime({
+          scope: "SINGLE",
+          kind: "APP",
+          amount,
+          unit: extendUnit,
+          target: extendTarget.trim(),
+        });
+        if (resp.success) {
+          Alert.alert("Success", `Added ${amount} ${extendUnit.toLowerCase()}(s) to key.`);
+        } else {
+          Alert.alert("Failed", resp.error || "Could not extend time");
+        }
+      } else {
+        const resp = await extendAllKeysByAppId({
+          appId: extendTarget.trim() || "whizard_ai",
+          amount,
+          unit: extendUnit,
+        });
+        if (resp.success) {
+          Alert.alert("Success", `Extended all keys for ${extendTarget || "whizard_ai"}.`);
+        } else {
+          Alert.alert("Failed", resp.error || "Could not extend all keys");
+        }
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || "Extend time failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAction = (
     action: () => Promise<any>,
     confirmTitle: string,
     confirmMsg: string
@@ -133,158 +261,355 @@ export const AdminDashboardScreen: React.FC = () => {
     ]);
   };
 
+  const handlePingServer = async () => {
+    setPingLoading(true);
+    setPingStatus(null);
+    const start = Date.now();
+    try {
+      const resp = await fetchActiveSessions();
+      const elapsed = Date.now() - start;
+      if (resp.success) {
+        setPingStatus(`Connected! Ping: ${elapsed}ms`);
+      } else {
+        setPingStatus("Server responded with error");
+      }
+    } catch (err: any) {
+      setPingStatus(`Failed: ${err.message}`);
+    } finally {
+      setPingLoading(false);
+    }
+  };
+
+  const handleSaveApiUrl = () => {
+    const trimmed = apiUrlInput.trim() || DEFAULT_API_URL;
+    setApiUrl(trimmed);
+    setApiUrlInput(trimmed);
+    Alert.alert("Saved", `Server URL set to: ${trimmed}`);
+  };
+
   return (
     <View style={styles.container}>
-      {/* Tab Navigation */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          onPress={() => setActiveTab("keys")}
-          style={[styles.tabButton, activeTab === "keys" && styles.tabButtonActive]}
+      {/* Scrollable Sub-Navigation Tabs */}
+      <View style={styles.tabBarWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabBar}
         >
-          <Key size={16} color={activeTab === "keys" ? THEME.colors.primary : THEME.colors.textDim} />
-          <Text style={[styles.tabText, activeTab === "keys" && styles.tabTextActive]}>
-            Keys ({keys.length})
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setActiveTab("keys")}
+            style={[styles.tabButton, activeTab === "keys" && styles.tabButtonActive]}
+          >
+            <Key
+              size={15}
+              color={activeTab === "keys" ? THEME.colors.primary : THEME.colors.textDim}
+            />
+            <Text style={[styles.tabText, activeTab === "keys" && styles.tabTextActive]}>
+              Keys ({keys.length})
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() => setActiveTab("create")}
-          style={[styles.tabButton, activeTab === "create" && styles.tabButtonActive]}
-        >
-          <PlusCircle size={16} color={activeTab === "create" ? THEME.colors.primary : THEME.colors.textDim} />
-          <Text style={[styles.tabText, activeTab === "create" && styles.tabTextActive]}>
-            Generate
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setActiveTab("create")}
+            style={[styles.tabButton, activeTab === "create" && styles.tabButtonActive]}
+          >
+            <PlusCircle
+              size={15}
+              color={activeTab === "create" ? THEME.colors.primary : THEME.colors.textDim}
+            />
+            <Text style={[styles.tabText, activeTab === "create" && styles.tabTextActive]}>
+              Generate
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() => setActiveTab("sessions")}
-          style={[styles.tabButton, activeTab === "sessions" && styles.tabButtonActive]}
-        >
-          <Activity size={16} color={activeTab === "sessions" ? THEME.colors.primary : THEME.colors.textDim} />
-          <Text style={[styles.tabText, activeTab === "sessions" && styles.tabTextActive]}>
-            Sessions
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setActiveTab("extend")}
+            style={[styles.tabButton, activeTab === "extend" && styles.tabButtonActive]}
+          >
+            <Clock
+              size={15}
+              color={activeTab === "extend" ? THEME.colors.primary : THEME.colors.textDim}
+            />
+            <Text style={[styles.tabText, activeTab === "extend" && styles.tabTextActive]}>
+              Add Time
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setActiveTab("sessions")}
+            style={[styles.tabButton, activeTab === "sessions" && styles.tabButtonActive]}
+          >
+            <Activity
+              size={15}
+              color={activeTab === "sessions" ? THEME.colors.secondary : THEME.colors.textDim}
+            />
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === "sessions" && styles.tabTextActiveSecondary,
+              ]}
+            >
+              Sessions ({sessions.length})
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setActiveTab("settings")}
+            style={[styles.tabButton, activeTab === "settings" && styles.tabButtonActive]}
+          >
+            <SettingsIcon
+              size={15}
+              color={activeTab === "settings" ? THEME.colors.primary : THEME.colors.textDim}
+            />
+            <Text style={[styles.tabText, activeTab === "settings" && styles.tabTextActive]}>
+              Server
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {/* ===================== KEYS TAB ===================== */}
         {activeTab === "keys" && (
           <>
+            {/* Search Input */}
             <View style={styles.searchBar}>
               <Search size={18} color={THEME.colors.textDim} />
               <TextInput
                 style={styles.searchInput}
-                placeholder="Search key, user or HWID..."
+                placeholder="Search by key, discord user, or HWID..."
                 placeholderTextColor={THEME.colors.textDim}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 onSubmitEditing={loadData}
               />
+              <TouchableOpacity onPress={loadData} style={styles.searchBtn}>
+                <Text style={styles.searchBtnText}>Filter</Text>
+              </TouchableOpacity>
             </View>
 
-            {keys.map((k) => (
-              <Card key={k.id} style={styles.keyCard}>
-                <View style={styles.keyCardHeader}>
-                  <Text style={styles.keyText} selectable>
-                    {k.plain_key || k.id}
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setCopiedKey(k.plain_key);
-                      setTimeout(() => setCopiedKey(null), 2000);
-                    }}
-                    style={styles.copyBadge}
-                  >
-                    {copiedKey === k.plain_key ? (
-                      <Check size={14} color={THEME.colors.success} />
-                    ) : (
-                      <Copy size={14} color={THEME.colors.textDim} />
-                    )}
-                  </TouchableOpacity>
-                </View>
-
-                <View style={styles.keyMetaRow}>
-                  <Text style={styles.keyAppBadge}>{k.app_id}</Text>
-                  <Text style={styles.keyMetaText}>
-                    Expires: {new Date(k.expires_at).toLocaleDateString()}
-                  </Text>
-                </View>
-
-                {k.used_by && (
-                  <Text style={styles.usedByText}>Linked: @{k.used_by}</Text>
-                )}
-
-                <Text style={styles.hwidText}>
-                  HWID: {k.hwid ? `${k.hwid.slice(0, 10)}...` : "Unbound"}
+            {/* Product Filter Chips */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+            >
+              <TouchableOpacity
+                onPress={() => setFilterAppId("")}
+                style={[
+                  styles.filterChip,
+                  filterAppId === "" && styles.filterChipActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    filterAppId === "" && styles.filterChipTextActive,
+                  ]}
+                >
+                  All Products
                 </Text>
-
-                {/* Actions */}
-                <View style={styles.keyActions}>
-                  <TouchableOpacity
-                    onPress={() =>
-                      handleAction(
-                        () => resetKeyHwid(k.id),
-                        "Reset HWID",
-                        `Reset HWID binding for ${k.plain_key}?`
-                      )
-                    }
-                    style={styles.actionBtn}
+              </TouchableOpacity>
+              {PRODUCTS.filter((p) => p.id !== "custom").map((p) => (
+                <TouchableOpacity
+                  key={p.id}
+                  onPress={() => setFilterAppId(p.id)}
+                  style={[
+                    styles.filterChip,
+                    filterAppId === p.id && styles.filterChipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      filterAppId === p.id && styles.filterChipTextActive,
+                    ]}
                   >
-                    <RotateCcw size={14} color={THEME.colors.secondary} />
-                    <Text style={[styles.actionText, { color: THEME.colors.secondary }]}>
-                      HWID
-                    </Text>
-                  </TouchableOpacity>
+                    {p.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
 
-                  <TouchableOpacity
-                    onPress={() =>
-                      handleAction(
-                        () => (k.revoked ? unpauseKey(k.id) : pauseKey(k.id)),
-                        k.revoked ? "Unpause Key" : "Pause Key",
-                        `Change status for ${k.plain_key}?`
-                      )
-                    }
-                    style={styles.actionBtn}
-                  >
-                    {k.revoked ? (
-                      <Play size={14} color={THEME.colors.success} />
-                    ) : (
-                      <Pause size={14} color={THEME.colors.warning} />
-                    )}
-                    <Text style={styles.actionText}>
-                      {k.revoked ? "Unpause" : "Pause"}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    onPress={() =>
-                      handleAction(
-                        () => banKey(k.id),
-                        "Ban Key",
-                        `Revoke & permanently ban key ${k.plain_key}?`
-                      )
-                    }
-                    style={styles.actionBtn}
-                  >
-                    <Ban size={14} color={THEME.colors.danger} />
-                    <Text style={[styles.actionText, { color: THEME.colors.danger }]}>
-                      Ban
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+            {loading && keys.length === 0 ? (
+              <ActivityIndicator
+                size="large"
+                color={THEME.colors.primary}
+                style={{ marginTop: 24 }}
+              />
+            ) : keys.length === 0 ? (
+              <Card style={{ alignItems: "center", paddingVertical: 24 }}>
+                <Text style={{ color: THEME.colors.textDim }}>No license keys found.</Text>
               </Card>
-            ))}
+            ) : (
+              keys.map((k) => (
+                <Card key={k.id} style={styles.keyCard}>
+                  <View style={styles.keyCardHeader}>
+                    <Text style={styles.keyText} selectable>
+                      {k.plain_key || k.id}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => copyToClipboard(k.plain_key || k.id, k.id)}
+                      style={styles.copyBadge}
+                    >
+                      {copiedKey === k.id ? (
+                        <Check size={14} color={THEME.colors.success} />
+                      ) : (
+                        <Copy size={14} color={THEME.colors.textDim} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.keyMetaRow}>
+                    <Text style={styles.keyAppBadge}>{k.app_id}</Text>
+                    <Text
+                      style={[
+                        styles.statusBadge,
+                        k.revoked
+                          ? styles.statusBadgeRevoked
+                          : styles.statusBadgeActive,
+                      ]}
+                    >
+                      {k.revoked ? "PAUSED / BANNED" : "ACTIVE"}
+                    </Text>
+                    <Text style={styles.keyMetaText}>
+                      Expires: {new Date(k.expires_at).toLocaleDateString()}
+                    </Text>
+                  </View>
+
+                  {k.used_by && (
+                    <View style={styles.discordBadge}>
+                      <Text style={styles.discordBadgeText}>
+                        Discord: @{k.used_by}
+                      </Text>
+                    </View>
+                  )}
+
+                  <Text style={styles.hwidText} selectable>
+                    HWID: {k.hwid ? k.hwid : "Unbound (Any PC)"}
+                  </Text>
+
+                  {/* Actions */}
+                  <View style={styles.keyActions}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleAction(
+                          () => resetKeyHwid(k.id),
+                          "Reset HWID",
+                          `Reset HWID binding for ${k.plain_key}?`
+                        )
+                      }
+                      style={styles.actionBtn}
+                    >
+                      <RotateCcw size={13} color={THEME.colors.secondary} />
+                      <Text
+                        style={[
+                          styles.actionText,
+                          { color: THEME.colors.secondary },
+                        ]}
+                      >
+                        HWID
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleAction(
+                          () => (k.revoked ? unpauseKey(k.id) : pauseKey(k.id)),
+                          k.revoked ? "Unpause Key" : "Pause Key",
+                          `Change state for ${k.plain_key}?`
+                        )
+                      }
+                      style={styles.actionBtn}
+                    >
+                      {k.revoked ? (
+                        <Play size={13} color={THEME.colors.success} />
+                      ) : (
+                        <Pause size={13} color={THEME.colors.warning} />
+                      )}
+                      <Text style={styles.actionText}>
+                        {k.revoked ? "Unpause" : "Pause"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleAction(
+                          () => banKey(k.id),
+                          "Ban Key",
+                          `Permanently ban and revoke ${k.plain_key}?`
+                        )
+                      }
+                      style={styles.actionBtn}
+                    >
+                      <Ban size={13} color={THEME.colors.danger} />
+                      <Text
+                        style={[styles.actionText, { color: THEME.colors.danger }]}
+                      >
+                        Ban
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleAction(
+                          () => deleteKey(k.id),
+                          "Delete Key",
+                          `Are you sure you want to permanently delete ${k.plain_key}?`
+                        )
+                      }
+                      style={[styles.actionBtn, { borderColor: THEME.colors.danger }]}
+                    >
+                      <Trash2 size={13} color={THEME.colors.danger} />
+                      <Text
+                        style={[styles.actionText, { color: THEME.colors.danger }]}
+                      >
+                        Del
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </Card>
+              ))
+            )}
           </>
         )}
 
+        {/* ===================== GENERATE TAB ===================== */}
         {activeTab === "create" && (
           <Card variant="glow">
             <Text style={styles.sectionHeader}>Generate License Key</Text>
 
+            {/* Product Presets */}
+            <Text style={styles.fieldLabel}>Choose Product Preset:</Text>
+            <View style={styles.presetGrid}>
+              {PRODUCTS.map((prod) => (
+                <TouchableOpacity
+                  key={prod.id}
+                  onPress={() => handleProductPreset(prod)}
+                  style={[
+                    styles.presetBtn,
+                    (appId === prod.id ||
+                      (prod.id === "custom" && !appId)) &&
+                      styles.presetBtnActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.presetBtnText,
+                      (appId === prod.id ||
+                        (prod.id === "custom" && !appId)) &&
+                        styles.presetBtnTextActive,
+                    ]}
+                  >
+                    {prod.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
             <Input
-              label="Product ID"
-              placeholder="e.g. whizard_ai or whizard_v2"
+              label="Product ID (appId)"
+              placeholder="e.g. whizard_ai"
               value={appId}
               onChangeText={setAppId}
             />
@@ -297,6 +622,29 @@ export const AdminDashboardScreen: React.FC = () => {
               onChangeText={setDurationDays}
             />
 
+            {/* Quick Duration Buttons */}
+            <View style={styles.quickDurationRow}>
+              {["7", "30", "90", "365", "9999"].map((d) => (
+                <TouchableOpacity
+                  key={d}
+                  onPress={() => setDurationDays(d)}
+                  style={[
+                    styles.quickDurationBtn,
+                    durationDays === d && styles.quickDurationBtnActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.quickDurationText,
+                      durationDays === d && styles.quickDurationTextActive,
+                    ]}
+                  >
+                    {d === "9999" ? "Lifetime" : `${d}d`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
             <Input
               label="Key Pattern"
               placeholder="WZRD-AI-****-****"
@@ -306,7 +654,7 @@ export const AdminDashboardScreen: React.FC = () => {
 
             <Input
               label="Assigned User / Discord Tag (Optional)"
-              placeholder="e.g. whiz"
+              placeholder="e.g. whiz or whiz#0001"
               value={usedByNote}
               onChangeText={setUsedByNote}
             />
@@ -316,12 +664,30 @@ export const AdminDashboardScreen: React.FC = () => {
               onPress={handleCreateKey}
               loading={loading}
               variant="primary"
-              style={{ marginTop: 8 }}
+              style={{ marginTop: 12 }}
             />
 
             {createdKeyResult && (
               <Card variant="subtle" style={{ marginTop: 16 }}>
-                <Text style={styles.successKeyHeader}>Generated Key:</Text>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <Text style={styles.successKeyHeader}>Generated Key:</Text>
+                  <TouchableOpacity
+                    onPress={() => copyToClipboard(createdKeyResult, "created")}
+                    style={styles.copyBadge}
+                  >
+                    {copiedKey === "created" ? (
+                      <Check size={14} color={THEME.colors.success} />
+                    ) : (
+                      <Copy size={14} color={THEME.colors.primary} />
+                    )}
+                  </TouchableOpacity>
+                </View>
                 <Text style={styles.successKeyValue} selectable>
                   {createdKeyResult}
                 </Text>
@@ -330,40 +696,327 @@ export const AdminDashboardScreen: React.FC = () => {
           </Card>
         )}
 
-        {activeTab === "sessions" && (
-          <>
-            <Text style={styles.sessionCount}>
-              Active Live Sessions: {sessions.length}
+        {/* ===================== ADD TIME TAB ===================== */}
+        {activeTab === "extend" && (
+          <Card variant="glow">
+            <Text style={styles.sectionHeader}>Add Time to License</Text>
+            <Text style={styles.sectionDesc}>
+              Extend the expiration date for a single key or all keys for an entire product.
             </Text>
 
-            {sessions.map((s) => (
-              <Card key={s.id} style={styles.sessionCard}>
-                <View style={styles.sessionHeader}>
-                  <View style={styles.pulseDot} />
-                  <Text style={styles.sessionToken}>
-                    Session {s.id.slice(0, 8)}...
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() =>
-                      handleAction(
-                        () => killSession(s.id),
-                        "Kill Session",
-                        "Force disconnect this client immediately?"
-                      )
-                    }
-                    style={styles.killBtn}
+            {/* Scope selection */}
+            <Text style={styles.fieldLabel}>Extension Scope:</Text>
+            <View style={styles.scopeRow}>
+              <TouchableOpacity
+                onPress={() => setExtendScope("SINGLE")}
+                style={[
+                  styles.scopeBtn,
+                  extendScope === "SINGLE" && styles.scopeBtnActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.scopeBtnText,
+                    extendScope === "SINGLE" && styles.scopeBtnTextActive,
+                  ]}
+                >
+                  Single Key
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setExtendScope("ALL_APP_KEYS")}
+                style={[
+                  styles.scopeBtn,
+                  extendScope === "ALL_APP_KEYS" && styles.scopeBtnActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.scopeBtnText,
+                    extendScope === "ALL_APP_KEYS" && styles.scopeBtnTextActive,
+                  ]}
+                >
+                  All Keys (Product)
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Input
+              label={
+                extendScope === "SINGLE"
+                  ? "Target Plain Key or Key ID"
+                  : "Product ID (e.g. whizard_ai or LG)"
+              }
+              placeholder={
+                extendScope === "SINGLE"
+                  ? "e.g. WZRD-AI-XXXX-XXXX"
+                  : "e.g. whizard_ai"
+              }
+              value={extendTarget}
+              onChangeText={setExtendTarget}
+            />
+
+            <Input
+              label="Amount"
+              placeholder="7"
+              keyboardType="numeric"
+              value={extendAmount}
+              onChangeText={setExtendAmount}
+            />
+
+            {/* Unit selection */}
+            <Text style={styles.fieldLabel}>Time Unit:</Text>
+            <View style={styles.unitRow}>
+              {(["HOUR", "DAY", "WEEK", "MONTH"] as const).map((u) => (
+                <TouchableOpacity
+                  key={u}
+                  onPress={() => setExtendUnit(u)}
+                  style={[
+                    styles.unitBtn,
+                    extendUnit === u && styles.unitBtnActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.unitBtnText,
+                      extendUnit === u && styles.unitBtnTextActive,
+                    ]}
                   >
-                    <Trash2 size={14} color={THEME.colors.danger} />
-                    <Text style={styles.killText}>Kill</Text>
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.sessionDetail}>HWID: {s.hwid}</Text>
-                <Text style={styles.sessionDetail}>
-                  Expires: {new Date(s.expires_at).toLocaleTimeString()}
+                    {u}S
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Button
+              title="Add Time Now"
+              onPress={handleExtendTime}
+              loading={loading}
+              variant="secondary"
+              style={{ marginTop: 16 }}
+            />
+          </Card>
+        )}
+
+        {/* ===================== LIVE SESSIONS TAB ===================== */}
+        {activeTab === "sessions" && (
+          <>
+            <View style={styles.sessionControlBar}>
+              <View>
+                <Text style={styles.sessionCountTitle}>Active Live Sessions</Text>
+                <Text style={styles.sessionCountSub}>
+                  {sessions.length} connection(s) currently active
+                </Text>
+              </View>
+
+              <View style={styles.sessionActionsRight}>
+                <TouchableOpacity
+                  onPress={loadData}
+                  style={styles.refreshIconBtn}
+                >
+                  <RefreshCw size={14} color={THEME.colors.secondary} />
+                  <Text style={styles.refreshBtnText}>Refresh</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setAutoRefreshSessions(!autoRefreshSessions)}
+                  style={[
+                    styles.autoRefreshBadge,
+                    autoRefreshSessions && styles.autoRefreshBadgeActive,
+                  ]}
+                >
+                  <Text style={styles.autoRefreshText}>
+                    {autoRefreshSessions ? "Auto (10s)" : "Manual"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {sessions.length === 0 ? (
+              <Card style={{ alignItems: "center", paddingVertical: 24 }}>
+                <Text style={{ color: THEME.colors.textDim }}>
+                  No active client sessions right now.
                 </Text>
               </Card>
-            ))}
+            ) : (
+              sessions.map((s) => (
+                <Card key={s.id} style={styles.sessionCard}>
+                  {/* Session Header */}
+                  <View style={styles.sessionHeader}>
+                    <View style={styles.sessionHeaderLeft}>
+                      <View style={styles.pulseDot} />
+                      <Text style={styles.sessionToken}>
+                        ID: {s.id.slice(0, 12)}...
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleAction(
+                          () => killSession(s.id),
+                          "Kill Session",
+                          `Immediately terminate session for ${s.user || s.username || "client"}?`
+                        )
+                      }
+                      style={styles.killBtn}
+                    >
+                      <Trash2 size={13} color={THEME.colors.danger} />
+                      <Text style={styles.killText}>Kill</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* DISCORD USER / ID (Requested by user) */}
+                  <View style={styles.sessionDiscordRow}>
+                    <View style={styles.discordUserPill}>
+                      <Text style={styles.discordUserLabel}>Discord:</Text>
+                      <Text style={styles.discordUserName} selectable>
+                        @{s.user || s.username || "Anonymous"}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* License Key */}
+                  <View style={styles.sessionDetailRow}>
+                    <Text style={styles.sessionDetailLabel}>Key:</Text>
+                    <Text style={styles.sessionDetailValue} selectable>
+                      {s.key || s.license_key || "N/A"}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() =>
+                        copyToClipboard(s.key || s.license_key || "", `key-${s.id}`)
+                      }
+                      style={styles.miniCopyBtn}
+                    >
+                      <Copy size={12} color={THEME.colors.textDim} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* HWID */}
+                  <View style={styles.sessionDetailRow}>
+                    <Text style={styles.sessionDetailLabel}>HWID:</Text>
+                    <Text style={styles.sessionDetailValue} selectable>
+                      {s.hwid ? `${s.hwid.slice(0, 16)}...` : "None"}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => copyToClipboard(s.hwid, `hwid-${s.id}`)}
+                      style={styles.miniCopyBtn}
+                    >
+                      <Copy size={12} color={THEME.colors.textDim} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Timestamps */}
+                  <View style={styles.sessionTimestamps}>
+                    <Text style={styles.sessionTimeText}>
+                      Created: {new Date(s.created_at).toLocaleTimeString()}
+                    </Text>
+                    <Text style={styles.sessionTimeText}>
+                      Expires: {new Date(s.expires_at).toLocaleTimeString()}
+                    </Text>
+                  </View>
+                </Card>
+              ))
+            )}
           </>
+        )}
+
+        {/* ===================== SERVER SETTINGS TAB ===================== */}
+        {activeTab === "settings" && (
+          <Card variant="glow">
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
+              <Server size={22} color={THEME.colors.primary} style={{ marginRight: 8 }} />
+              <Text style={styles.sectionHeader}>WhizAuth Server Settings</Text>
+            </View>
+            <Text style={styles.sectionDesc}>
+              Configure the WhizAuth backend API endpoint. Accessible only to authenticated admins.
+            </Text>
+
+            <Input
+              label="Active API Endpoint"
+              placeholder="https://api.whizard.dev"
+              value={apiUrlInput}
+              onChangeText={setApiUrlInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            {/* Quick Server Switchers */}
+            <Text style={styles.fieldLabel}>Quick Switch:</Text>
+            <View style={styles.serverPresetsRow}>
+              <TouchableOpacity
+                onPress={() => {
+                  setApiUrlInput("https://api.whizard.dev");
+                  setApiUrl("https://api.whizard.dev");
+                }}
+                style={[
+                  styles.serverPresetBtn,
+                  apiUrlInput === "https://api.whizard.dev" &&
+                    styles.serverPresetBtnActive,
+                ]}
+              >
+                <Text style={styles.serverPresetText}>Production (api.whizard.dev)</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  setApiUrlInput("http://10.0.2.2:4000");
+                  setApiUrl("http://10.0.2.2:4000");
+                }}
+                style={[
+                  styles.serverPresetBtn,
+                  apiUrlInput === "http://10.0.2.2:4000" &&
+                    styles.serverPresetBtnActive,
+                ]}
+              >
+                <Text style={styles.serverPresetText}>Local (10.0.2.2:4000)</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Button
+              title="Save Server URL"
+              onPress={handleSaveApiUrl}
+              variant="secondary"
+              icon={<Check size={16} color="#fff" />}
+              style={{ marginTop: 12 }}
+            />
+
+            {/* Test Ping */}
+            <Button
+              title={pingLoading ? "Testing..." : "Test Connection / Ping"}
+              onPress={handlePingServer}
+              loading={pingLoading}
+              variant="outline"
+              icon={<Wifi size={16} color={THEME.colors.primary} />}
+              style={{ marginTop: 10 }}
+            />
+
+            {pingStatus && (
+              <View style={styles.pingResultBox}>
+                <Text
+                  style={[
+                    styles.pingResultText,
+                    pingStatus.includes("Connected")
+                      ? { color: THEME.colors.success }
+                      : { color: THEME.colors.danger },
+                  ]}
+                >
+                  {pingStatus}
+                </Text>
+              </View>
+            )}
+
+            {/* Admin Logout */}
+            <View style={{ marginTop: 24, borderTopWidth: 1, borderTopColor: THEME.colors.border, paddingTop: 16 }}>
+              <Button
+                title="Log Out from Admin Panel"
+                onPress={() => {
+                  if (onLogout) onLogout();
+                }}
+                variant="danger"
+                icon={<LogOut size={16} color="#fff" />}
+              />
+            </View>
+          </Card>
         )}
       </ScrollView>
     </View>
@@ -377,35 +1030,43 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: THEME.spacing.lg,
+    paddingBottom: 40,
+  },
+  tabBarWrapper: {
+    backgroundColor: "rgba(15, 23, 42, 0.95)",
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.border,
   },
   tabBar: {
     flexDirection: "row",
-    backgroundColor: "rgba(15, 23, 42, 0.9)",
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.colors.border,
-    padding: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    gap: 6,
   },
   tabButton: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.03)",
   },
   tabButtonActive: {
-    backgroundColor: "rgba(168, 85, 247, 0.15)",
+    backgroundColor: "rgba(168, 85, 247, 0.18)",
     borderWidth: 1,
     borderColor: THEME.colors.primary,
   },
   tabText: {
     color: THEME.colors.textDim,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
     marginLeft: 6,
   },
   tabTextActive: {
     color: THEME.colors.text,
+  },
+  tabTextActiveSecondary: {
+    color: THEME.colors.secondary,
   },
   searchBar: {
     flexDirection: "row",
@@ -415,14 +1076,51 @@ const styles = StyleSheet.create({
     borderColor: THEME.colors.border,
     borderRadius: THEME.borderRadius.md,
     paddingHorizontal: 12,
-    marginBottom: THEME.spacing.md,
+    marginBottom: THEME.spacing.sm,
   },
   searchInput: {
     flex: 1,
     color: THEME.colors.text,
     paddingVertical: 10,
     paddingHorizontal: 8,
-    fontSize: 14,
+    fontSize: 13,
+  },
+  searchBtn: {
+    backgroundColor: THEME.colors.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  searchBtnText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  filterRow: {
+    flexDirection: "row",
+    gap: 6,
+    paddingVertical: 6,
+    marginBottom: THEME.spacing.md,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  filterChipActive: {
+    backgroundColor: THEME.colors.primary,
+    borderColor: THEME.colors.primary,
+  },
+  filterChipText: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  filterChipTextActive: {
+    color: "#fff",
   },
   keyCard: {
     marginBottom: 10,
@@ -435,9 +1133,10 @@ const styles = StyleSheet.create({
   },
   keyText: {
     color: THEME.colors.text,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "800",
     letterSpacing: 0.5,
+    flex: 1,
   },
   copyBadge: {
     padding: 6,
@@ -448,36 +1147,61 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginTop: 6,
+    gap: 6,
+    flexWrap: "wrap",
   },
   keyAppBadge: {
     backgroundColor: THEME.colors.primaryGlow,
     color: THEME.colors.primary,
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 10,
+    fontWeight: "800",
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
-    marginRight: 8,
+  },
+  statusBadge: {
+    fontSize: 10,
+    fontWeight: "800",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  statusBadgeActive: {
+    backgroundColor: THEME.colors.successGlow,
+    color: THEME.colors.success,
+  },
+  statusBadgeRevoked: {
+    backgroundColor: THEME.colors.dangerGlow,
+    color: THEME.colors.danger,
   },
   keyMetaText: {
     color: THEME.colors.textDim,
-    fontSize: 12,
+    fontSize: 11,
   },
-  usedByText: {
-    color: THEME.colors.secondary,
-    fontSize: 12,
-    fontWeight: "600",
-    marginTop: 4,
+  discordBadge: {
+    backgroundColor: "rgba(88, 101, 242, 0.15)",
+    borderColor: "rgba(88, 101, 242, 0.4)",
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 6,
+    alignSelf: "flex-start",
+  },
+  discordBadgeText: {
+    color: "#99aab5",
+    fontSize: 11,
+    fontWeight: "700",
   },
   hwidText: {
     color: THEME.colors.textDim,
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: 11,
+    marginTop: 4,
   },
   keyActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    gap: 8,
+    gap: 6,
     marginTop: 10,
     paddingTop: 8,
     borderTopWidth: 1,
@@ -490,39 +1214,202 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     paddingHorizontal: 8,
     borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "transparent",
   },
   actionText: {
     color: THEME.colors.textMuted,
     fontSize: 11,
     fontWeight: "700",
-    marginLeft: 4,
+    marginLeft: 3,
   },
   sectionHeader: {
     color: THEME.colors.text,
     fontSize: 18,
     fontWeight: "800",
-    marginBottom: 16,
+    marginBottom: 4,
+  },
+  sectionDesc: {
+    color: THEME.colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  fieldLabel: {
+    color: THEME.colors.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  presetGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginBottom: 10,
+  },
+  presetBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  presetBtnActive: {
+    backgroundColor: THEME.colors.primaryGlow,
+    borderColor: THEME.colors.primary,
+  },
+  presetBtnText: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  presetBtnTextActive: {
+    color: THEME.colors.primary,
+  },
+  quickDurationRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: -4,
+    marginBottom: 12,
+  },
+  quickDurationBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+  },
+  quickDurationBtnActive: {
+    backgroundColor: THEME.colors.secondaryGlow,
+  },
+  quickDurationText: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  quickDurationTextActive: {
+    color: THEME.colors.secondary,
   },
   successKeyHeader: {
     color: THEME.colors.success,
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "800",
     textTransform: "uppercase",
   },
   successKeyValue: {
     color: THEME.colors.text,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "800",
     marginTop: 4,
+    letterSpacing: 0.5,
   },
-  sessionCount: {
+  scopeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  scopeBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  scopeBtnActive: {
+    backgroundColor: THEME.colors.secondaryGlow,
+    borderColor: THEME.colors.secondary,
+  },
+  scopeBtnText: {
     color: THEME.colors.textDim,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
-    marginBottom: 10,
+  },
+  scopeBtnTextActive: {
+    color: THEME.colors.secondary,
+  },
+  unitRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 12,
+  },
+  unitBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  unitBtnActive: {
+    backgroundColor: THEME.colors.primaryGlow,
+    borderColor: THEME.colors.primary,
+  },
+  unitBtnText: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  unitBtnTextActive: {
+    color: THEME.colors.primary,
+  },
+  sessionControlBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  sessionCountTitle: {
+    color: THEME.colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  sessionCountSub: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  sessionActionsRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  refreshIconBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(6, 182, 212, 0.1)",
+    borderWidth: 1,
+    borderColor: THEME.colors.secondary,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  refreshBtnText: {
+    color: THEME.colors.secondary,
+    fontSize: 11,
+    fontWeight: "700",
+    marginLeft: 4,
+  },
+  autoRefreshBadge: {
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  autoRefreshBadgeActive: {
+    backgroundColor: "rgba(16, 185, 129, 0.15)",
+  },
+  autoRefreshText: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    fontWeight: "600",
   },
   sessionCard: {
     marginBottom: 10,
+    padding: 12,
   },
   sessionHeader: {
     flexDirection: "row",
@@ -530,18 +1417,22 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 6,
   },
+  sessionHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
   pulseDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
     backgroundColor: THEME.colors.success,
-    marginRight: 6,
+    marginRight: 8,
   },
   sessionToken: {
-    flex: 1,
     color: THEME.colors.text,
-    fontWeight: "700",
-    fontSize: 14,
+    fontWeight: "800",
+    fontSize: 13,
   },
   killBtn: {
     flexDirection: "row",
@@ -554,12 +1445,97 @@ const styles = StyleSheet.create({
   killText: {
     color: THEME.colors.danger,
     fontSize: 11,
-    fontWeight: "700",
-    marginLeft: 4,
+    fontWeight: "800",
+    marginLeft: 3,
   },
-  sessionDetail: {
-    color: THEME.colors.textDim,
+  sessionDiscordRow: {
+    marginVertical: 4,
+  },
+  discordUserPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(88, 101, 242, 0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(88, 101, 242, 0.5)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: "flex-start",
+  },
+  discordUserLabel: {
+    color: "#5865f2",
+    fontWeight: "800",
+    fontSize: 11,
+    marginRight: 4,
+  },
+  discordUserName: {
+    color: "#ffffff",
+    fontWeight: "800",
     fontSize: 12,
-    marginTop: 2,
+  },
+  sessionDetailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+  },
+  sessionDetailLabel: {
+    color: THEME.colors.textDim,
+    fontSize: 11,
+    fontWeight: "600",
+    width: 40,
+  },
+  sessionDetailValue: {
+    color: THEME.colors.textMuted,
+    fontSize: 12,
+    fontFamily: "monospace",
+    flex: 1,
+  },
+  miniCopyBtn: {
+    padding: 4,
+  },
+  sessionTimestamps: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 8,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.05)",
+  },
+  sessionTimeText: {
+    color: THEME.colors.textDim,
+    fontSize: 10,
+  },
+  serverPresetsRow: {
+    flexDirection: "column",
+    gap: 6,
+    marginBottom: 12,
+  },
+  serverPresetBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  serverPresetBtnActive: {
+    backgroundColor: THEME.colors.primaryGlow,
+    borderColor: THEME.colors.primary,
+  },
+  serverPresetText: {
+    color: THEME.colors.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  pingResultBox: {
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 10,
+    alignItems: "center",
+  },
+  pingResultText: {
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

@@ -17,6 +17,10 @@ export interface SessionItemData {
   session_token: string;
   hwid: string;
   app_key_id: string;
+  user?: string;
+  username?: string;
+  key?: string;
+  license_key?: string;
   created_at: string;
   expires_at: string;
   last_seen_at: string;
@@ -74,6 +78,28 @@ export async function deleteKey(keyOrId: string, kind: "APP" | "MODEL" = "APP") 
   return resp.data;
 }
 
+export async function extendKeyTime(params: {
+  scope: "SINGLE" | "ALL_APP_KEYS" | "ALL_MODEL_KEYS";
+  kind?: "APP" | "MODEL";
+  amount: number;
+  unit: "HOUR" | "DAY" | "WEEK" | "MONTH";
+  target?: string;
+}) {
+  const client = getApiClient();
+  const resp = await client.post("/api/admin/key/add-time", params);
+  return resp.data;
+}
+
+export async function extendAllKeysByAppId(params: {
+  appId: string;
+  amount: number;
+  unit: "HOUR" | "DAY" | "WEEK" | "MONTH";
+}) {
+  const client = getApiClient();
+  const resp = await client.post("/api/admin/key/extend-all", params);
+  return resp.data;
+}
+
 export async function fetchActiveSessions() {
   const client = getApiClient();
   const resp = await client.get("/api/admin/sessions");
@@ -82,6 +108,6 @@ export async function fetchActiveSessions() {
 
 export async function killSession(sessionId: string, reason: string = "Admin Terminated") {
   const client = getApiClient();
-  const resp = await client.post("/api/admin/sessions/kill", { sessionId, reason });
+  const resp = await client.post("/api/admin/session/kill", { sessionId, reason });
   return resp.data;
 }

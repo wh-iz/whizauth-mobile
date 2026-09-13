@@ -1,28 +1,28 @@
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { THEME } from "../styles/theme";
-import { Shield, User, Lock, Settings as SettingsIcon } from "lucide-react-native";
+import { Shield, User, Lock } from "lucide-react-native";
 
 interface HeaderProps {
   currentMode: "customer" | "admin";
   onSwitchMode: (mode: "customer" | "admin") => void;
-  onOpenSettings?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   currentMode,
   onSwitchMode,
-  onOpenSettings,
 }) => {
   return (
     <View style={styles.header}>
       <View style={styles.brandContainer}>
         <View style={styles.logoBadge}>
-          <Shield size={20} color={THEME.colors.primary} />
+          <Shield size={18} color={THEME.colors.primary} />
         </View>
         <View>
           <Text style={styles.brandTitle}>WhizAuth</Text>
-          <Text style={styles.brandSubtitle}>Mobile Portal</Text>
+          <Text style={styles.brandSubtitle}>
+            {currentMode === "customer" ? "User Portal" : "Admin Panel"}
+          </Text>
         </View>
       </View>
 
@@ -36,7 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
             ]}
           >
             <User
-              size={14}
+              size={13}
               color={
                 currentMode === "customer"
                   ? THEME.colors.secondary
@@ -61,7 +61,7 @@ export const Header: React.FC<HeaderProps> = ({
             ]}
           >
             <Lock
-              size={14}
+              size={13}
               color={
                 currentMode === "admin"
                   ? THEME.colors.primary
@@ -78,15 +78,6 @@ export const Header: React.FC<HeaderProps> = ({
             </Text>
           </TouchableOpacity>
         </View>
-
-        {onOpenSettings && (
-          <TouchableOpacity
-            onPress={onOpenSettings}
-            style={styles.settingsButton}
-          >
-            <SettingsIcon size={18} color={THEME.colors.textMuted} />
-          </TouchableOpacity>
-        )}
       </View>
     </View>
   );
