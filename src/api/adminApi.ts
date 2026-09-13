@@ -111,3 +111,30 @@ export async function killSession(sessionId: string, reason: string = "Admin Ter
   const resp = await client.post("/api/admin/session/kill", { sessionId, reason });
   return resp.data;
 }
+
+export async function cleanupExpiredKeys() {
+  const client = getApiClient();
+  const resp = await client.post("/api/admin/keys/cleanup-expired", {});
+  return resp.data;
+}
+
+export async function sendDiscordAnnouncement(params: {
+  title: string;
+  content: string;
+  type?: "update" | "info" | "warning" | "important" | "downtime";
+  ping?: "@everyone" | "@here" | "none";
+  channelId?: string;
+  botToken?: string;
+  webhookUrl?: string;
+  showBranding?: boolean;
+}) {
+  const client = getApiClient();
+  const resp = await client.post("/api/admin/announcement", params);
+  return resp.data;
+}
+
+export async function getAnnouncementSettings() {
+  const client = getApiClient();
+  const resp = await client.get("/api/admin/announcement/settings");
+  return resp.data;
+}

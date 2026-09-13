@@ -14,6 +14,7 @@ export const THEME = {
     danger: "#ef4444",
     dangerGlow: "rgba(239, 68, 68, 0.2)",
     warning: "#f59e0b",
+    accent: "#ec4899",
     text: "#f8fafc",
     textMuted: "#94a3b8",
     textDim: "#64748b",

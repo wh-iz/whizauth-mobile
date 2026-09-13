@@ -28,6 +28,8 @@ import {
   extendAllKeysByAppId,
   fetchActiveSessions,
   killSession,
+  cleanupExpiredKeys,
+  sendDiscordAnnouncement,
 } from "../api/adminApi";
 import {
   currentApiUrl,
@@ -52,6 +54,7 @@ import {
   Server,
   LogOut,
   Wifi,
+  Megaphone,
 } from "lucide-react-native";
 
 interface AdminDashboardScreenProps {
@@ -74,7 +77,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    "keys" | "create" | "extend" | "sessions" | "settings"
+    "keys" | "create" | "extend" | "sessions" | "announce" | "settings"
   >("keys");
 
   // Keys state
@@ -83,6 +86,18 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [filterAppId, setFilterAppId] = useState("");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [cleaningExpired, setCleaningExpired] = useState(false);
+
+  // Announcement state
+  const [announceChannelId, setAnnounceChannelId] = useState("1490803745389285530");
+  const [announceType, setAnnounceType] = useState<
+    "update" | "info" | "warning" | "important" | "downtime"
+  >("update");
+  const [announcePing, setAnnouncePing] = useState<"@everyone" | "@here" | "none">("@everyone");
+  const [announceTitle, setAnnounceTitle] = useState("");
+  const [announceContent, setAnnounceContent] = useState("");
+  const [announceShowBranding, setAnnounceShowBranding] = useState(true);
+  const [announceSending, setAnnounceSending] = useState(false);
 
   // Generate Key state
   const [keyType, setKeyType] = useState<"APP" | "MODEL">("APP");
@@ -287,6 +302,74 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
     Alert.alert("Saved", `Server URL set to: ${trimmed}`);
   };
 
+  const handleSendAnnouncement = async () => {
+    if (!announceTitle.trim() || !announceContent.trim()) {
+      Alert.alert("Missing Information", "Please provide both a headline title and message content.");
+      return;
+    }
+
+    setAnnounceSending(true);
+    try {
+      const resp = await sendDiscordAnnouncement({
+        channelId: announceChannelId.trim(),
+        title: announceTitle.trim(),
+        content: announceContent.trim(),
+        type: announceType,
+        ping: announcePing,
+        showBranding: announceShowBranding,
+      });
+
+      if (resp.success) {
+        Alert.alert(
+          "Sent Successfully!",
+          `Announcement sent to channel #${announceChannelId} via ${resp.method || "Discord"}!`
+        );
+        setAnnounceTitle("");
+        setAnnounceContent("");
+      } else {
+        Alert.alert("Failed", resp.error || "Could not send announcement");
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || err.message || "Failed to send");
+    } finally {
+      setAnnounceSending(false);
+    }
+  };
+
+  const handleCleanupExpiredKeys = () => {
+    Alert.alert(
+      "Purge Expired Keys",
+      "Do you want to purge all expired license keys and sessions from the database?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Purge All",
+          style: "destructive",
+          onPress: async () => {
+            setCleaningExpired(true);
+            try {
+              const res = await cleanupExpiredKeys();
+              if (res.success) {
+                const { deletedAppKeys = 0, deletedModelKeys = 0 } = res.data || {};
+                Alert.alert(
+                  "Cleanup Complete",
+                  `Deleted ${deletedAppKeys} expired App Keys and ${deletedModelKeys} Model Keys.`
+                );
+                loadData();
+              } else {
+                Alert.alert("Failed", res.error || "Failed to clean keys");
+              }
+            } catch (err: any) {
+              Alert.alert("Error", err.response?.data?.error || err.message);
+            } finally {
+              setCleaningExpired(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <View style={styles.container}>
       {/* Scrollable Sub-Navigation Tabs */}
@@ -354,6 +437,24 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
           </TouchableOpacity>
 
           <TouchableOpacity
+            onPress={() => setActiveTab("announce")}
+            style={[styles.tabButton, activeTab === "announce" && styles.tabButtonActive]}
+          >
+            <Megaphone
+              size={15}
+              color={activeTab === "announce" ? THEME.colors.accent : THEME.colors.textDim}
+            />
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === "announce" && { color: THEME.colors.accent, fontWeight: "700" },
+              ]}
+            >
+              Announce
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             onPress={() => setActiveTab("settings")}
             style={[styles.tabButton, activeTab === "settings" && styles.tabButtonActive]}
           >
@@ -385,6 +486,24 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
               />
               <TouchableOpacity onPress={loadData} style={styles.searchBtn}>
                 <Text style={styles.searchBtnText}>Filter</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleCleanupExpiredKeys}
+                style={[
+                  styles.searchBtn,
+                  {
+                    backgroundColor: "rgba(239, 68, 68, 0.15)",
+                    borderColor: "rgba(239, 68, 68, 0.4)",
+                    borderWidth: 1,
+                  },
+                ]}
+                disabled={cleaningExpired}
+              >
+                {cleaningExpired ? (
+                  <ActivityIndicator size="small" color="#EF4444" />
+                ) : (
+                  <Text style={[styles.searchBtnText, { color: "#EF4444" }]}>🧹 Purge</Text>
+                )}
               </TouchableOpacity>
             </View>
 
@@ -918,6 +1037,216 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
               ))
             )}
           </>
+        )}
+
+        {/* ===================== ANNOUNCE TAB ===================== */}
+        {activeTab === "announce" && (
+          <View style={styles.announceContainer}>
+            <Card style={styles.announceCard}>
+              <View style={styles.announceHeader}>
+                <View style={styles.announceIconWrapper}>
+                  <Megaphone size={20} color={THEME.colors.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.announceTitle}>Discord Announcement</Text>
+                  <Text style={styles.announceSubtitle}>
+                    Post directly to #{announceChannelId}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Channel ID */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.fieldLabel}>Channel ID</Text>
+                <TextInput
+                  style={styles.announceInput}
+                  value={announceChannelId}
+                  onChangeText={setAnnounceChannelId}
+                  placeholder="1490803745389285530"
+                  placeholderTextColor={THEME.colors.textDim}
+                />
+              </View>
+
+              {/* Category selector */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.fieldLabel}>Announcement Type</Text>
+                <View style={styles.announceTypeRow}>
+                  {[
+                    { id: "update", emoji: "🚀", label: "Update", color: "#57F287" },
+                    { id: "info", emoji: "🔔", label: "Info", color: "#5865F2" },
+                    { id: "warning", emoji: "⚠️", label: "Warning", color: "#FEE75C" },
+                    { id: "important", emoji: "❗", label: "Important", color: "#ED4245" },
+                    { id: "downtime", emoji: "🛠️", label: "Downtime", color: "#94A3B8" },
+                  ].map((cat) => (
+                    <TouchableOpacity
+                      key={cat.id}
+                      onPress={() => setAnnounceType(cat.id as any)}
+                      style={[
+                        styles.announceTypeChip,
+                        announceType === cat.id && {
+                          borderColor: cat.color,
+                          backgroundColor: `${cat.color}22`,
+                        },
+                      ]}
+                    >
+                      <Text style={{ fontSize: 13 }}>{cat.emoji}</Text>
+                      <Text
+                        style={[
+                          styles.announceTypeChipText,
+                          announceType === cat.id && { color: "#FFF", fontWeight: "700" },
+                        ]}
+                      >
+                        {cat.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Notification Ping */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.fieldLabel}>Mention Ping</Text>
+                <View style={styles.pingRow}>
+                  {(["@everyone", "@here", "none"] as const).map((p) => (
+                    <TouchableOpacity
+                      key={p}
+                      onPress={() => setAnnouncePing(p)}
+                      style={[
+                        styles.pingChip,
+                        announcePing === p && styles.pingChipActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.pingChipText,
+                          announcePing === p && styles.pingChipTextActive,
+                        ]}
+                      >
+                        {p}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Title */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.fieldLabel}>Headline Title</Text>
+                <TextInput
+                  style={styles.announceInput}
+                  value={announceTitle}
+                  onChangeText={setAnnounceTitle}
+                  placeholder="e.g. System Update & Maintenance"
+                  placeholderTextColor={THEME.colors.textDim}
+                />
+              </View>
+
+              {/* Content */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={styles.fieldLabel}>Message Content (Markdown)</Text>
+                <TextInput
+                  style={[styles.announceInput, styles.announceTextArea]}
+                  value={announceContent}
+                  onChangeText={setAnnounceContent}
+                  placeholder="• Fixed expired keys auto-deletion&#10;• Added Discord bot management commands&#10;• Performance enhancements"
+                  placeholderTextColor={THEME.colors.textDim}
+                  multiline
+                  numberOfLines={5}
+                />
+              </View>
+
+              {/* Branding Toggle */}
+              <TouchableOpacity
+                onPress={() => setAnnounceShowBranding(!announceShowBranding)}
+                style={styles.brandingRow}
+              >
+                <View style={styles.brandingCheckbox}>
+                  {announceShowBranding && <Check size={14} color={THEME.colors.primary} />}
+                </View>
+                <Text style={styles.brandingText}>Show "whizARD" in embed footer</Text>
+              </TouchableOpacity>
+
+              {/* Send Button */}
+              <Button
+                title={announceSending ? "Sending to Discord..." : `Send to #${announceChannelId}`}
+                onPress={handleSendAnnouncement}
+                loading={announceSending}
+                variant="primary"
+                icon={<Megaphone size={16} color="#fff" />}
+                style={{ marginTop: 18 }}
+              />
+            </Card>
+
+            {/* Live Discord Embed Preview Card */}
+            <View style={styles.previewCard}>
+              <Text style={styles.previewHeader}>👁️ Discord Embed Preview</Text>
+              <View
+                style={[
+                  styles.discordEmbed,
+                  {
+                    borderLeftColor:
+                      announceType === "update"
+                        ? "#57F287"
+                        : announceType === "info"
+                        ? "#5865F2"
+                        : announceType === "warning"
+                        ? "#FEE75C"
+                        : announceType === "important"
+                        ? "#ED4245"
+                        : "#94A3B8",
+                  },
+                ]}
+              >
+                <View style={styles.discordAuthorRow}>
+                  <Text
+                    style={[
+                      styles.discordAuthorText,
+                      {
+                        color:
+                          announceType === "update"
+                            ? "#57F287"
+                            : announceType === "info"
+                            ? "#5865F2"
+                            : announceType === "warning"
+                            ? "#FEE75C"
+                            : announceType === "important"
+                            ? "#ED4245"
+                            : "#94A3B8",
+                      },
+                    ]}
+                  >
+                    {announceType === "update"
+                      ? "🚀 UPDATE"
+                      : announceType === "info"
+                      ? "🔔 INFO"
+                      : announceType === "warning"
+                      ? "⚠️ WARNING"
+                      : announceType === "important"
+                      ? "❗ IMPORTANT"
+                      : "🛠️ DOWNTIME"}
+                  </Text>
+                </View>
+
+                {announcePing !== "none" && (
+                  <Text style={styles.discordPing}>{announcePing}</Text>
+                )}
+
+                <Text style={styles.discordTitle}>
+                  {announceTitle.trim() ? announceTitle : "Announcement Headline"}
+                </Text>
+
+                <Text style={styles.discordDesc}>
+                  {announceContent.trim()
+                    ? announceContent
+                    : "Your formatted announcement content will appear here in Discord embed format."}
+                </Text>
+
+                <Text style={styles.discordFooter}>
+                  {announceShowBranding ? `whizARD • ${new Date().toLocaleDateString()}` : new Date().toLocaleDateString()} • channel #{announceChannelId}
+                </Text>
+              </View>
+            </View>
+          </View>
         )}
 
         {/* ===================== SERVER SETTINGS TAB ===================== */}
@@ -1537,5 +1866,175 @@ const styles = StyleSheet.create({
   pingResultText: {
     fontSize: 12,
     fontWeight: "700",
+  },
+  announceContainer: {
+    gap: 14,
+  },
+  announceCard: {
+    padding: 16,
+  },
+  announceHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 4,
+  },
+  announceIconWrapper: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "rgba(168, 85, 247, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  announceTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: THEME.colors.text,
+  },
+  announceSubtitle: {
+    fontSize: 12,
+    color: THEME.colors.textDim,
+    marginTop: 2,
+  },
+  announceInput: {
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    borderRadius: 8,
+    color: THEME.colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+  },
+  announceTextArea: {
+    minHeight: 90,
+    textAlignVertical: "top",
+    fontFamily: "monospace",
+    fontSize: 12,
+  },
+  announceTypeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 4,
+  },
+  announceTypeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  announceTypeChipText: {
+    fontSize: 11,
+    color: THEME.colors.textDim,
+    fontWeight: "600",
+  },
+  pingRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+  pingChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  pingChipActive: {
+    backgroundColor: "rgba(168, 85, 247, 0.2)",
+    borderColor: THEME.colors.primary,
+  },
+  pingChipText: {
+    fontSize: 11,
+    color: THEME.colors.textDim,
+    fontWeight: "600",
+  },
+  pingChipTextActive: {
+    color: THEME.colors.text,
+    fontWeight: "700",
+  },
+  brandingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+  },
+  brandingCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: THEME.colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(168, 85, 247, 0.1)",
+  },
+  brandingText: {
+    fontSize: 12,
+    color: THEME.colors.textMuted,
+  },
+  previewCard: {
+    marginTop: 4,
+    backgroundColor: "rgba(15, 23, 42, 0.7)",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    padding: 14,
+  },
+  previewHeader: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: THEME.colors.textDim,
+    marginBottom: 10,
+  },
+  discordEmbed: {
+    backgroundColor: "#2B2D31",
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    padding: 12,
+    gap: 6,
+  },
+  discordAuthorRow: {
+    marginBottom: 2,
+  },
+  discordAuthorText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  discordPing: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(88, 101, 242, 0.2)",
+    color: "#c9cdfb",
+    fontSize: 11,
+    fontWeight: "700",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  discordTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  discordDesc: {
+    fontSize: 12,
+    color: "#dbdee1",
+    lineHeight: 18,
+  },
+  discordFooter: {
+    fontSize: 10,
+    color: "#949ba4",
+    marginTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.05)",
+    paddingTop: 6,
   },
 });
